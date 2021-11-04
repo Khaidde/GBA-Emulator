@@ -1,0 +1,4 @@
+.ccls
+.clang-format
+.ccls-cache
+build/
