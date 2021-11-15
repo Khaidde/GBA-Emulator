@@ -1,4 +1,7 @@
 .ccls
 .clang-format
 .ccls-cache
+.idea
+
 build/
+test/
