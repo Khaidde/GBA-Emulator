@@ -8,6 +8,7 @@
 
 int main() {
     std::ifstream file("./test/gba-tests/arm/arm.gba", std::ios::binary | std::ios::ate);
+    // std::ifstream file("./test/gba-tests/thumb/thumb.gba", std::ios::binary | std::ios::ate);
 
     if (!file.is_open()) {
         FATAL("Cannot open file\n");
@@ -32,7 +33,7 @@ int main() {
     }
     armCpu.reset();
     try {
-        while (!armCpu.end_test()) {
+        while (!armCpu.swiInterrupt) {
             armCpu.cycle();
         }
         armCpu.x_regs();
