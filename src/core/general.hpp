@@ -15,11 +15,11 @@
 
 #define UNUSED(expr) (void)(expr);
 
-#define FATAL(...)                                                                         \
-    do {                                                                                   \
-        char buff[0xFF] = "FATAL ERROR: ";                                                 \
-        snprintf(buff + 13 * sizeof(char), sizeof(buff) - 13 * sizeof(char), __VA_ARGS__); \
-        throw std::runtime_error(buff);                                                    \
+#define FATAL(...)                                           \
+    do {                                                     \
+        char buff[0xFF] = "FATAL ERROR: ";                   \
+        snprintf(buff + 13, sizeof(buff) - 13, __VA_ARGS__); \
+        throw std::runtime_error(buff);                      \
     } while (0)
 
 using s64 = int64_t;
@@ -31,7 +31,7 @@ using u32 = uint32_t;
 using u16 = uint16_t;
 using u8 = uint8_t;
 
-constexpr auto BYTE_SET_COUNT = [] {
+constexpr auto POP_COUNT = [] {
     std::array<int, 256> arr = {};
     arr[0] = 0;
     for (size_t i = 0; i < 256; i++) {
@@ -39,10 +39,3 @@ constexpr auto BYTE_SET_COUNT = [] {
     }
     return arr;
 }();
-
-class Memory;
-class ARM;
-struct Bus {
-    Memory* mem;
-    ARM* armCpu;
-};

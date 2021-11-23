@@ -2,15 +2,16 @@
 
 #include <cstdarg>
 
-#include "memory.hpp"
+#include "gba.hpp"
+#include "general.hpp"
 
-#define ARM_ERR(...)                   \
-    do {                               \
-        printf("...at PC=%08x\n", PC); \
-        FATAL(__VA_ARGS__);            \
+#define ARM_ERR(...)                    \
+    do {                                \
+        printf("ERR at PC=%08x\n", PC); \
+        FATAL(__VA_ARGS__);             \
     } while (0)
 
-#ifndef NDEBUG
+#ifdef DEBUG
 #define ARM_ASSERT(cond, ...)     \
     do {                          \
         if (!(cond)) {            \
@@ -23,42 +24,7 @@
     } while (0)
 #endif
 
-enum class InstrType {
-    FLUSHED = 0,
-    PENDING,
-    UNKNOWN,
-    ARM_B_BL,
-    ARM_BX,
-    ARM_SWI,
-    ARM_PSR,
-    ARM_MULT,
-    ARM_DATA_PROCCESS,
-    ARM_SINGLE_DATA_TRANSFER,
-    ARM_HW_SIGNED_DATA_TRANSFER,
-    ARM_BLOCK_TRANSFER,
-    ARM_SWAP,
-
-    THUMB_MOV_SHIFTED,
-    THUMB_ADD_SUB,
-    THUMB_IMMEDIATE,
-    THUMB_ALU,
-    THUMB_HI_REG_BX,
-    THUMB_LDR_PC,
-    THUMB_LDR_STR_REG,
-    THUMB_LDR_STR_SIGNED_B_HW,
-    THUMB_LDR_STR_IMMEDIATE,
-    THUMB_LDR_STR_HW,
-    THUMB_LDR_STR_SP,
-    THUMB_ADD_PC_SP,
-    THUMB_ADD_SP_OFF,
-    THUMB_PUSH_POP,
-    THUMB_LDM_STM,
-    THUMB_COND_BR,
-    THUMB_SWI,
-    THUMB_UNCOND_BR,
-    THUMB_BL_HI,
-    THUMB_BL_LO,
-};
+namespace gba {
 
 enum PSRMask : u32 {
     N = 0x80000000,
@@ -83,7 +49,7 @@ enum ModeBits : char {
 };
 
 static s32 sign_extend(char signBit, u32 val) {
-#ifndef NDEBUG
+#ifdef DEBUG
     if (signBit >= 31) {
         FATAL("Can't sign extend number with signBit >= 31: val=%08x", val);
     }
@@ -91,7 +57,7 @@ static s32 sign_extend(char signBit, u32 val) {
     return (s32)(~((val & (1 << signBit)) - 1) | val);
 }
 
-ARM::ARM(Bus* bus) : bus(bus) {
+ARM::ARM() {
     for (int i = 0; i < 8; i++) {
         r[i] = &genRegLo[i];
     }
@@ -153,9 +119,9 @@ void ARM::reset() {
     for (u32 i = 0; i < 16; i++) {
         *r[i] = 0XDEADCAFE;
     }
-    *ref.SP = 0xCAFEDEB8;
+    *ref.SP = 0x03007F00;
 
-    PC = 0x80000000;
+    PC = 0x08000000;
     CPSR = 0;
     SPSR = nullptr;
 
@@ -170,16 +136,16 @@ void ARM::cycle() {
             PC &= ~(u32)0x1;
             log(">>Last instruction misaligned PC (Thumb mode)<<\n");
         }
-        pipeline[pipelineIdx].opcode = bus->mem->read16(PC);
+        pipeline[pipelineIdx].opcode = mem.read16(PC);
     } else {
         if ((PC & 0x3) != 0) {
             PC &= ~(u32)0x1;
             log(">>Last instruction misaligned PC (Arm mode)<<\n");
         }
-        pipeline[pipelineIdx].opcode = bus->mem->read32(PC);
+        pipeline[pipelineIdx].opcode = mem.read32(PC);
     }
     log("--");
-    ARM_ASSERT(PC >= 0x80000000, "Invalid PC which is less than 0x80000000");
+    ARM_ASSERT(PC >= 0x08000000, "Invalid PC which is less than 0x08000000");
     pipeline[pipelineIdx].type = InstrType::PENDING;
 
     // Decode
@@ -339,8 +305,11 @@ void ARM::cycle() {
     pipelineIdx = (pipelineIdx + 1) % 3;
 }
 
-void ARM::log(const char* format, ...) {
-#ifndef NDEBUG
+void ARM::log(const char* format __attribute__((unused)), ...) {
+    if (PC <= 0x08000300) {
+        return;
+    }
+#ifdef DEBUG
     va_list args;
     va_start(args, format);
     vprintf(format, args);
@@ -349,6 +318,14 @@ void ARM::log(const char* format, ...) {
 }
 
 bool ARM::is_thumb_mode() { return CPSR & (1 << 5); }
+
+u32 ARM::look_ahead_PC() {
+    if (is_thumb_mode()) {
+        return PC + 2;
+    } else {
+        return PC + 4;
+    }
+}
 
 void ARM::update_mode(u32 psr) {
     if ((CPSR ^ psr) & 0x1F) {
@@ -393,7 +370,7 @@ void ARM::update_mode(u32 psr) {
                 ref.LR = &bankedLR.und;
                 SPSR = &bankedSPSR.und;
                 break;
-            default: ARM_ERR("TODO unknown mode which can't be switched to");
+            default: ARM_ERR("Undefined mode which can't be switched to");
         }
     }
 }
@@ -423,7 +400,7 @@ bool ARM::check_cond(u8 cond) {
         case 0x8:  // HI
             return c_flag() && !z_flag();
         case 0x9:  // LS
-            return !c_flag() && z_flag();
+            return !c_flag() || z_flag();
         case 0xA:  // GE
             return n_flag() == v_flag();
         case 0xB:  // LT
@@ -433,7 +410,7 @@ bool ARM::check_cond(u8 cond) {
         case 0xD:  // LE
             return z_flag() || (n_flag() ^ v_flag());
         case 0xE: return true;
-        case 0xF: ARM_ERR("TODO 'NEVER' condition code is rarely used"); return false;
+        case 0xF: return false;
         default: ARM_ERR("Condition code for instruction should always 4-bits");
     }
 }
@@ -553,12 +530,12 @@ void ARM::arm_bx() {
             op += 8;
         }
         CPSR |= 0x00000020;
-        op = op - 1;
+        PC = op - 1;
     } else {
         ARM_ASSERT((op & 0x3) == 0, "bx instruction in arm mode must be aligned to word (4-bytes)");
+        PC = op;
     }
 
-    PC = op;
     log("bx to %08x", PC);
     if (is_thumb_mode()) log(" - mode switch to thumb");
     log("\n");
@@ -614,7 +591,6 @@ void ARM::arm_data_proc() {
             ARM_ASSERT(rs <= 14, "register shift for data processing instructions can't be PC");
             ARM_ASSERT(!bit_op(7), "Bit 7 must be 0 for data proccess with shift by register");
 
-            // TODO: cleanup this quirk when rm == PC or rn == PC
             if (rn == 15) {
                 op1 = PC + 4;
             }
@@ -661,7 +637,6 @@ void ARM::arm_psr() {
     ARM_ASSERT(mask_op(23, 0x3) == 0b10, "Bit [24:23] must be 0b10 for psr instruction");
     bool isSPSRSel = bit_op(22);
     u32* PSR;
-    u8 curMode = CPSR & PSRMask::MODE;
     if (isSPSRSel) {
         ARM_ASSERT(SPSR, "No SPSR exists in user/sys mode");
         PSR = SPSR;
@@ -679,7 +654,7 @@ void ARM::arm_psr() {
         ARM_ASSERT(!bit_op(17), "Bit 17 attempts to set reserved PSR bits for msr instruction");
         bool writeCnt = bit_op(16);
 
-        ARM_ASSERT(!writeCnt || curMode != ModeBits::USR, "Can't change control bits in usr mode");
+        ARM_ASSERT(!writeCnt || (CPSR & PSRMask::MODE) != ModeBits::USR, "Can't change control bits in usr mode");
         ARM_ASSERT(mask_op(12, 0xF) == 0xF, "Bit [15:12] must be 0b1111 for msr instruction");
 
         if (writeFlags && writeCnt) {
@@ -866,18 +841,18 @@ void ARM::arm_single_data() {
     }
     if (isLoad) {
         if (isByteTransfer) {
-            execute_byte_load(rd, address);
+            execute_byte_load(r[rd], address);
         } else {
-            execute_ldr(rd, address);
+            execute_ldr(r[rd], address);
         }
         if (rd == 15) {
             flush_pipeline();
         }
     } else {
         if (isByteTransfer) {
-            execute_byte_store(rd, address);
+            execute_byte_store(r[rd], address);
         } else {
-            execute_str(rd, address);
+            execute_str(r[rd], address);
         }
     }
     if (!isPreOffset) {
@@ -941,12 +916,12 @@ void ARM::arm_halfword_signed_data() {
     switch (opcode) {
         case 0b00: ARM_ERR("Reserved%s", isLoad ? " for swp instruction" : ""); break;
         case 0b01:  // STRH/LDRH
-            execute_halfword_memory(isLoad, rd, address);
+            execute_halfword_memory(isLoad, r[rd], address);
             break;
         case 0b10: {  // LDRSB
             ARM_ASSERT(isLoad, "ldrd instruction not supported");
 
-            execute_signed_byte_load(rd, address);
+            execute_signed_byte_load(r[rd], address);
             if (rd == 15) {
                 flush_pipeline();
             }
@@ -955,7 +930,7 @@ void ARM::arm_halfword_signed_data() {
         case 0b11: {  // LDRSH
             ARM_ASSERT(isLoad, "strd instruction not supported");
 
-            execute_signed_halfword_load(rd, address);
+            execute_signed_halfword_load(r[rd], address);
             if (rd == 15) {
                 flush_pipeline();
             }
@@ -990,19 +965,19 @@ void ARM::arm_swap() {
     u32 address = *r[rn];
     if (swapByte) {
         u8 writeVal = *r[rm] & 0xFF;
-        *r[rd] = bus->mem->read8(address);
-        bus->mem->write8(address, writeVal);
+        *r[rd] = mem.read8(address);
+        mem.write8(address, writeVal);
     } else {
         u32 data;
         if (address & 0x3) {
-            data = bus->mem->read32(address & ~(u32)0x3);
+            data = mem.read32(address & ~(u32)0x3);
             data = ror((address & 0x3) << 3, data);
         } else {
-            data = bus->mem->read32(address);
+            data = mem.read32(address);
         }
         u32 writeVal = *r[rm];
         *r[rd] = data;
-        bus->mem->write32(address & ~(u32)0x3, writeVal);
+        mem.write32(address & ~(u32)0x3, writeVal);
     }
 }
 
@@ -1047,7 +1022,7 @@ void ARM::arm_block_transfer() {
         }
     }
 
-    execute_block_transfer(isPreOffset, isAddOffset, isWriteBack, isLoad, rn, regList);
+    execute_block_transfer(isPreOffset, isAddOffset, isWriteBack, isLoad, r[rn], regList);
 
     log("}%s\n", isForceUser ? "^" : "");
     if (isForceUser) {
@@ -1199,9 +1174,8 @@ void ARM::thumb_hi_reg_bx() {
     u32 op1 = *r[rd];
     u32 op2 = rd == 15 ? (*r[rs] & ~(u32)1) : *r[rs];
 
-    bool msbd = bit_op(7);
-    bool msbs = bit_op(6);
-    ARM_ASSERT(thumbOpcode == 0x3 || msbd || msbs, "msbd and/or msbs must be set for thumb high register instruction");
+    ARM_ASSERT(thumbOpcode == 0x3 || bit_op(7) || bit_op(6),
+               "msbd and/or msbs must be set for thumb hi reg instruction");
     switch (thumbOpcode) {
         case 0b00:  // ADD
             log("add r%d(%08x), r%d(%08x)\n", rd, *r[rd], rs, *r[rs]);
@@ -1222,13 +1196,16 @@ void ARM::thumb_hi_reg_bx() {
             execute_data_proc(0xD, true, r[rd], op1, op2);
             break;
         case 0b11:
-            ARM_ASSERT(msbd == 0, "msbd must be 0 for thumb bx");
-            if ((*r[rs] & 0x1) == 0) {
+            ARM_ASSERT(bit_op(7) == 0, "msbd must be 0 for thumb bx");
+            if ((op2 & 0x1) == 0) {
                 CPSR &= 0xFFFFFFDF;
                 ARM_ASSERT((op2 & 0x3) == 0, "bx instruction in thumb mode must be aligned to word (4-bytes)");
+                op2 &= ~(u32)3;
+            } else {
+                op2 &= ~(u32)1;
             }
+            PC = (rs == 15) ? op2 & ~(u32)0x2 : op2;
 
-            PC = op2 & ~(u32)0x1;
             log("bx to %08x", PC);
             if (!is_thumb_mode()) log(" - mode switch to arm");
             log("\n");
@@ -1242,7 +1219,7 @@ void ARM::thumb_ldr_pc() {
     ARM_ASSERT(mask_op(11, 0x1F) == 0b01001, "Bits [15:11] must be 0b01001 for thumb load pc relative");
     u8 rd = mask_op(8, 0x7);
     u16 offset = (execOpcode & 0xFF) << 2;
-    *r[rd] = bus->mem->read32((PC & ~(u32)0x2) + offset);
+    *r[rd] = mem.read32((PC & ~(u32)0x2) + offset);
 
     log("ldr r%d(%08x), [PC(%08x) + 0x%08x]\n", rd, *r[rd], PC, offset);
 }
@@ -1263,15 +1240,15 @@ void ARM::thumb_ldr_str_reg() {
     u32 address = *r[rb] + *r[ro];
     if (isLoad) {
         if (isByteTransfer) {
-            execute_byte_load(rd, address);
+            execute_byte_load(r[rd], address);
         } else {
-            execute_ldr(rd, address);
+            execute_ldr(r[rd], address);
         }
     } else {
         if (isByteTransfer) {
-            execute_byte_store(rd, address);
+            execute_byte_store(r[rd], address);
         } else {
-            execute_str(rd, address);
+            execute_str(r[rd], address);
         }
     }
 }
@@ -1292,25 +1269,25 @@ void ARM::thumb_ldr_str_signed_byte_hw() {
     u32 address = *r[rb] + *r[ro];
     switch (opcode) {
         case 0b00: {  // STRH
-            bus->mem->write16(address & ~(u32)0x3, *r[rd] & 0xFFFF);
+            mem.write16(address & ~(u32)0x1, *r[rd] & 0xFFFF);
             break;
         }
         case 0b01:  // LDSB
-            execute_signed_byte_load(rd, address);
+            execute_signed_byte_load(r[rd], address);
             break;
         case 0b10: {  // LDRH
             u32 data;
             if (address & 0x1) {
-                data = bus->mem->read16(address & ~(u32)0x1);
+                data = mem.read16(address & ~(u32)0x1);
                 data = ror(8, data);
             } else {
-                data = bus->mem->read16(address);
+                data = mem.read16(address);
             }
             *r[rd] = data;
             break;
         }
         case 0b11:  // LDSH
-            execute_signed_halfword_load(rd, address);
+            execute_signed_halfword_load(r[rd], address);
             break;
     }
 }
@@ -1331,15 +1308,15 @@ void ARM::thumb_ldr_str_immediate() {
     u32 address = *r[rb] + offset;
     if (isLoad) {
         if (isByteTransfer) {
-            execute_byte_load(rd, address);
+            execute_byte_load(r[rd], address);
         } else {
-            execute_ldr(rd, address);
+            execute_ldr(r[rd], address);
         }
     } else {
         if (isByteTransfer) {
-            execute_byte_store(rd, address);
+            execute_byte_store(r[rd], address);
         } else {
-            execute_str(rd, address);
+            execute_str(r[rd], address);
         }
     }
 }
@@ -1354,7 +1331,7 @@ void ARM::thumb_ldr_str_halfword() {
 
     log("%s r%d(%08x), [r%d(%08x), 0x%02x)]\n", isLoad ? "ldrh" : "strh", rd, *r[rd], rb, *r[rb], offset);
     u32 address = *r[rb] + offset;
-    execute_halfword_memory(isLoad, rd, address);
+    execute_halfword_memory(isLoad, r[rd], address);
 }
 
 void ARM::thumb_ldr_str_sp() {
@@ -1367,9 +1344,9 @@ void ARM::thumb_ldr_str_sp() {
     log("%s r%d(%08x), [sp(%08x), 0x%02x)]\n", isLoad ? "ldr" : "str", rd, *r[rd], *ref.SP, offset);
     u32 address = *ref.SP + offset;
     if (isLoad) {
-        execute_ldr(rd, address);
+        execute_ldr(r[rd], address);
     } else {
-        execute_str(rd, address);
+        execute_str(r[rd], address);
     }
 }
 
@@ -1429,9 +1406,9 @@ void ARM::thumb_push_pop() {
     log("}\n");
 
     if (isPop) {
-        execute_block_transfer(false, true, true, true, 13, regList);
+        execute_block_transfer(false, true, true, true, ref.SP, regList);
     } else {
-        execute_block_transfer(true, false, true, false, 13, regList);
+        execute_block_transfer(true, false, true, false, ref.SP, regList);
     }
 }
 
@@ -1455,7 +1432,7 @@ void ARM::thumb_ldm_stm() {
     }
     log("}\n");
 
-    execute_block_transfer(false, true, true, isLoad, rb, regList);
+    execute_block_transfer(false, true, true, isLoad, r[rb], regList);
 }
 
 static constexpr const char* THUMB16_OPCODES[] = {"eq", "ne", "cs", "cc", "mi", "pl", "vs",
@@ -1498,7 +1475,7 @@ void ARM::thumb_bl_lo() {
     log("bl PC = lr(%08x) + (0x%03x << 1), lr = PC + 2\n", *ref.LR, nn);
     u32 prevPC = PC;
     PC = *ref.LR + ((u32)nn << 1);
-    *ref.LR = prevPC & ~(u32)0x2;
+    *ref.LR = (prevPC - 2) | 0x1;
     flush_pipeline();
 }
 
@@ -1587,82 +1564,82 @@ void ARM::execute_data_proc(u8 opcode, bool setcc, u32* rd, u32 op1, u32 op2) {
     }
 }
 
-void ARM::execute_ldr(u8 rd, u32 address) {
+void ARM::execute_ldr(u32* rd, u32 address) {
     u32 data;
     if (address & 0x3) {
-        data = bus->mem->read32(address & ~(u32)0x3);
+        data = mem.read32(address & ~(u32)0x3);
         data = ror((address & 0x3) << 3, data);
     } else {
-        data = bus->mem->read32(address);
+        data = mem.read32(address);
     }
-    *r[rd] = data;
+    *rd = data;
 }
 
-void ARM::execute_byte_load(u8 rd, u32 address) { *r[rd] = bus->mem->read8(address); }
+void ARM::execute_byte_load(u32* rd, u32 address) { *rd = mem.read8(address); }
 
-void ARM::execute_str(u8 rd, u32 address) {
-    u32 storeData = rd == 15 ? PC + 4 : *r[rd];
+void ARM::execute_str(u32* rd, u32 address) {
+    u32 storeData = rd == &PC ? look_ahead_PC() : *rd;
     address &= ~(u32)0x3;
-    bus->mem->write32(address, storeData);
+    mem.write32(address, storeData);
 }
 
-void ARM::execute_byte_store(u8 rd, u32 address) {
-    u32 storeData = rd == 15 ? PC + 4 : *r[rd];
-    bus->mem->write8(address, storeData & 0xFF);
+void ARM::execute_byte_store(u32* rd, u32 address) {
+    u32 storeData = rd == &PC ? look_ahead_PC() : *rd;
+    mem.write8(address, storeData & 0xFF);
 }
 
-void ARM::execute_halfword_memory(bool isLoad, u8 rd, u32 address) {
+void ARM::execute_halfword_memory(bool isLoad, u32* rd, u32 address) {
     if (isLoad) {
         u32 data;
         if (address & 0x1) {
-            data = bus->mem->read16(address & ~(u32)0x1);
+            data = mem.read16(address & ~(u32)0x1);
             data = ror(8, data);
         } else {
-            data = bus->mem->read16(address);
+            data = mem.read16(address);
         }
-        *r[rd] = data;
-        if (rd == 15) {
+        *rd = data;
+        if (rd == &PC) {
             flush_pipeline();
         }
     } else {
-        u32 storeData = rd == 15 ? PC + 4 : *r[rd];
-        address &= ~(u32)0x3;
-        bus->mem->write16(address, storeData & 0xFFFF);
+        u32 storeData = rd == &PC ? look_ahead_PC() : *rd;
+        address &= ~(u32)0x1;
+        mem.write16(address, storeData & 0xFFFF);
     }
 }
 
-void ARM::execute_signed_byte_load(u8 rd, u32 address) {
-    u32 data = bus->mem->read8(address & ~(u32)0x3);
+void ARM::execute_signed_byte_load(u32* rd, u32 address) {
+    u32 data = mem.read8(address & ~(u32)0x3);
     if (data & 0x80) {
-        *r[rd] = 0xFFFFFF00 | data;
+        *rd = 0xFFFFFF00 | data;
     } else {
-        *r[rd] = data;
+        *rd = data;
     }
 }
 
-void ARM::execute_signed_halfword_load(u8 rd, u32 address) {
+void ARM::execute_signed_halfword_load(u32* rd, u32 address) {
     u16 data;
     if (address & 0x1) {
-        data = bus->mem->read8(address);
+        data = mem.read8(address);
         if (data & 0x80) {
-            *r[rd] = 0xFFFFFF00 | data;
+            *rd = 0xFFFFFF00 | data;
         } else {
-            *r[rd] = data;
+            *rd = data;
         }
     } else {
-        data = bus->mem->read16(address);
+        data = mem.read16(address);
         if (data & 0x8000) {
-            *r[rd] = 0xFFFF0000 | data;
+            *rd = 0xFFFF0000 | data;
         } else {
-            *r[rd] = data;
+            *rd = data;
         }
     }
 }
 
-void ARM::execute_block_transfer(bool isPreOffset, bool isAddOffset, bool isWriteBack, bool isLoad, u8 rn,
+void ARM::execute_block_transfer(bool isPreOffset, bool isAddOffset, bool isWriteBack, bool isLoad, u32* rn,
                                  u16 regList) {
-    u8 numRegs = BYTE_SET_COUNT[regList >> 8] + BYTE_SET_COUNT[regList & 0xFF];
-    u32 baseAddress = *r[rn];
+    u8 numRegs = POP_COUNT[regList >> 8] + POP_COUNT[regList & 0xFF];
+    u32 baseAddress = *rn;
     u32 oldBaseAddress = baseAddress;
     u32 newBaseAddress = baseAddress + (u32)(isAddOffset ? 4 : -4) * numRegs;
 
@@ -1670,7 +1647,7 @@ void ARM::execute_block_transfer(bool isPreOffset, bool isAddOffset, bool isWrit
         // Strange behavior if there are no registers in the reg list
         if (isLoad) {
             flush_pipeline();
-            PC = bus->mem->read32(baseAddress & ~(u32)0x3);
+            PC = mem.read32(baseAddress & ~(u32)0x3);
         } else {
             u32 offsetAddress = baseAddress;
             if (!isAddOffset) {
@@ -1679,19 +1656,19 @@ void ARM::execute_block_transfer(bool isPreOffset, bool isAddOffset, bool isWrit
             if (!(isAddOffset ^ isPreOffset)) {
                 offsetAddress += 0x4;
             }
-            bus->mem->write32(offsetAddress & ~(u32)0x3, PC + (is_thumb_mode() ? 2 : 4));
+            mem.write32(offsetAddress & ~(u32)0x3, look_ahead_PC());
         }
         if (isAddOffset) {
-            *r[rn] = baseAddress + 0x40;
+            *rn = baseAddress + 0x40;
         } else {
-            *r[rn] = baseAddress - 0x40;
+            *rn = baseAddress - 0x40;
         }
     } else {
         if (!isAddOffset) {
             baseAddress = newBaseAddress;
         }
         if (!isAddOffset && isWriteBack) {
-            *r[rn] = baseAddress;
+            *rn = baseAddress;
         }
         u8 countedRegs = 0;
         for (int i = 0; i <= 15; i++) {
@@ -1703,20 +1680,20 @@ void ARM::execute_block_transfer(bool isPreOffset, bool isAddOffset, bool isWrit
                     if (i == 15) {
                         flush_pipeline();
                     }
-                    if (i == rn) {
+                    if (r[i] == rn) {
                         isWriteBack = false;
                     }
-                    *r[i] = bus->mem->read32(baseAddress & ~(u32)0x3);
+                    *r[i] = mem.read32(baseAddress & ~(u32)0x3);
                 } else {
-                    u32 storeData = i == 15 ? PC + (is_thumb_mode() ? 2 : 4) : *r[i];
-                    if (i == rn) {
+                    u32 storeData = i == 15 ? look_ahead_PC() : *r[i];
+                    if (r[i] == rn) {
                         if (countedRegs == 0) {
                             storeData = oldBaseAddress;
                         } else {
                             storeData = newBaseAddress;
                         }
                     }
-                    bus->mem->write32(baseAddress & ~(u32)0x3, storeData);
+                    mem.write32(baseAddress & ~(u32)0x3, storeData);
                 }
                 if (isAddOffset ^ isPreOffset) {
                     baseAddress += 4;
@@ -1728,9 +1705,11 @@ void ARM::execute_block_transfer(bool isPreOffset, bool isAddOffset, bool isWrit
             }
         }
         if (isAddOffset && isWriteBack) {
-            *r[rn] = baseAddress;
+            *rn = baseAddress;
         }
     }
 }
 
 void ARM::flush_pipeline() { pipeline[0] = pipeline[1] = pipeline[2] = {0, InstrType::FLUSHED}; }
+
+}  // namespace gba

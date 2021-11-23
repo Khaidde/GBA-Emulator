@@ -1,3 +1,5 @@
+BUILD_TYPE ?= RELEASE
+
 PLATFORM := $(shell uname -s)
 ifneq ($(findstring MSYS,$(PLATFORM)),)
 PLATFORM := windows32
@@ -18,12 +20,15 @@ ifeq ($(shell which clang++),)
 $(error Could not find path to clang++)
 else
 CC := clang++
-CFLAGS += -g
 CFLAGS += -std=c++17 -Wall -Wextra -Werror -Wsign-conversion
+LDFLAGS := -lshell32 -lSDL2main -lSDL2
 endif
 
 BIN_DIR ?= build/bin
 OBJ_DIR ?= build/obj
+
+SDL2_INCLUDE ?= C:/SDL2/include
+SDL2_LIB ?= C:/SDL2/lib/x64
 
 CORE_DIR := src/core
 
@@ -33,17 +38,26 @@ ifdef DEPS
 -include ${DEPS}
 endif
 
-.PHONY: build clean
+.PHONY: build build-debug clean
 
-build: ${BIN_DIR}/gbaemu.exe
+force-release:
+	$(eval CFLAGS += -O3)
+
+build: force-release ${BIN_DIR}/gbaemu.exe
+
+force-debug:
+	$(eval CFLAGS += -g -DDEBUG)
+
+build-debug: force-debug ${BIN_DIR}/gbaemu.exe
 
 ${BIN_DIR}/gbaemu.exe: ${OBJS}
 	@${MKDIR} -p ${dir $@}
-	${CC} ${CFLAGS} $^ -o $@
+	${CC} ${CFLAGS} -L${SDL2_LIB} $^ -o $@ ${LDFLAGS} -Wl,--subsystem,console
+	cp ${SDL2_LIB}/SDL2.dll ${BIN_DIR}/SDL2.dll
 
 ${OBJ_DIR}/%.o: ${CORE_DIR}/%.cpp
 	@${MKDIR} -p ${dir $@}
-	${CC} ${CFLAGS} -c $< -MMD -MF $(@:.o=.d) -o $@
+	${CC} ${CFLAGS} -I${SDL2_INCLUDE} -c $< -MMD -MF $(@:.o=.d) -o $@
 
 clean:
 	${RM} -f ${BIN_DIR}/* ${OBJ_DIR}/*

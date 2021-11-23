@@ -1,12 +1,49 @@
 #pragma once
 
-#include "emulator.hpp"
+#include "general.hpp"
 
-enum class InstrType;
+namespace gba {
+
+enum class InstrType {
+    FLUSHED = 0,
+    PENDING,
+    UNKNOWN,
+    ARM_B_BL,
+    ARM_BX,
+    ARM_SWI,
+    ARM_PSR,
+    ARM_MULT,
+    ARM_DATA_PROCCESS,
+    ARM_SINGLE_DATA_TRANSFER,
+    ARM_HW_SIGNED_DATA_TRANSFER,
+    ARM_BLOCK_TRANSFER,
+    ARM_SWAP,
+
+    THUMB_MOV_SHIFTED,
+    THUMB_ADD_SUB,
+    THUMB_IMMEDIATE,
+    THUMB_ALU,
+    THUMB_HI_REG_BX,
+    THUMB_LDR_PC,
+    THUMB_LDR_STR_REG,
+    THUMB_LDR_STR_SIGNED_B_HW,
+    THUMB_LDR_STR_IMMEDIATE,
+    THUMB_LDR_STR_HW,
+    THUMB_LDR_STR_SP,
+    THUMB_ADD_PC_SP,
+    THUMB_ADD_SP_OFF,
+    THUMB_PUSH_POP,
+    THUMB_LDM_STM,
+    THUMB_COND_BR,
+    THUMB_SWI,
+    THUMB_UNCOND_BR,
+    THUMB_BL_HI,
+    THUMB_BL_LO,
+};
 
 class ARM {
 public:
-    ARM(Bus* bus);
+    ARM();
     void x_regs();
 
     void reset();
@@ -18,6 +55,7 @@ private:
     void log(const char* format, ...);
 
     bool is_thumb_mode();
+    u32 look_ahead_PC();
     void update_mode(u32 psr);
 
     u32 mask_op(u8 offset, u32 mask);
@@ -73,14 +111,15 @@ private:
     void thumb_bl_lo();
 
     void execute_data_proc(u8 opcode, bool setcc, u32* rd, u32 op1, u32 op2);
-    void execute_ldr(u8 rd, u32 address);
-    void execute_byte_load(u8 rd, u32 address);
-    void execute_str(u8 rd, u32 address);
-    void execute_byte_store(u8 rd, u32 address);
-    void execute_halfword_memory(bool isLoad, u8 rd, u32 address);
-    void execute_signed_byte_load(u8 rd, u32 address);
-    void execute_signed_halfword_load(u8 rd, u32 address);
-    void execute_block_transfer(bool isPreOffset, bool isAddOffset, bool isWriteBack, bool isLoad, u8 rn, u16 regList);
+    void execute_ldr(u32* rd, u32 address);
+    void execute_byte_load(u32* rd, u32 address);
+    void execute_str(u32* rd, u32 address);
+    void execute_byte_store(u32* rd, u32 address);
+    void execute_halfword_memory(bool isLoad, u32* rd, u32 address);
+    void execute_signed_byte_load(u32* rd, u32 address);
+    void execute_signed_halfword_load(u32* rd, u32 address);
+    void execute_block_transfer(bool isPreOffset, bool isAddOffset, bool isWriteBack, bool isLoad, u32* rn,
+                                u16 regList);
 
     void flush_pipeline();
 
@@ -91,8 +130,6 @@ private:
         InstrType type;
     } pipeline[3];
     u8 pipelineIdx;
-
-    Bus* bus;
 
     union {
         struct {
@@ -106,7 +143,8 @@ private:
             u32* PC;
             u32* LR;
             u32* SP;
-            u32* genReg[12];
+            u32* reg_8_12[5];
+            u32* reg_0_7[8];
 #endif
         } ref;
         u32* r[16];
@@ -142,3 +180,5 @@ private:
         u32 und;
     } bankedSPSR;
 };
+
+}  // namespace gba

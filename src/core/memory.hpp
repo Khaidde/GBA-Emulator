@@ -1,10 +1,14 @@
 #pragma once
 
-#include "emulator.hpp"
+#include "general.hpp"
+
+namespace gba {
 
 class Memory {
 public:
     Memory();
+
+    void reset();
 
     u32 read32(u32 address);
     u16 read16(u32 address);
@@ -16,5 +20,11 @@ public:
 
 private:
     static constexpr size_t MEMORY_SIZE = 0x100000000;
-    u8* memory;  // TODO temporary
+    u8* memory;
+
+    u32 dma3Dest;
+    u32 dma3Src;
+    bool ongoingDMA;
 };
+
+}  // namespace gba
